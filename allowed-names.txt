@@ -360,8 +360,6 @@ feedback.ebay.*   # eBay customers reviews
 =feedback.aliexpress.com        # aliexpress.com
 =*.speedcurve.com               # www.tv8.it
 =cmp.sky.it                     # www.tv8.it
-=1337x.to                       # 1337x.to
-=igg-games.com                  # igg-games.com
 =tripadvisor.it                 # tripadvisor.it
 =*.maltego.com                  # maltego.com
 =www.protondb.com               # protondb.com
