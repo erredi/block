@@ -1,11 +1,15 @@
 #! /usr/bin/env python3
 
-# Linux, run with: python3 generate-domains-blocklist.py > list.txt.tmp && mv -f list.txt.tmp list
-# Windows, run with: py generate-domains-blocklist.py > list.txt
+# run with python generate-domains-blocklist.py > list.txt.tmp && mv -f list.txt.tmp list
+
+from __future__ import print_function
 
 import argparse
 import re
 import sys
+import fnmatch
+import concurrent.futures
+import time
 
 try:
     import urllib2 as urllib
@@ -18,7 +22,13 @@ except (ImportError, ModuleNotFoundError):
     URLLIB_NEW = True
 
 
-def parse_time_restricted_list(content):
+def setup_logging(output_file=None):
+    log_info = sys.stdout if output_file else sys.stderr
+    log_err = sys.stderr
+    return log_info, log_err
+
+
+def parse_trusted_list(content):
     rx_comment = re.compile(r"^(#|$)")
     rx_inline_comment = re.compile(r"\s*#\s*[a-z0-9-].*$")
     rx_trusted = re.compile(r"^([*a-z0-9.-]+)\s*(@\S+)?$")
@@ -26,12 +36,17 @@ def parse_time_restricted_list(content):
 
     names = set()
     time_restrictions = {}
+    globs = set()
     rx_set = [rx_trusted]
     for line in content.splitlines():
         line = str.lower(str.strip(line))
         if rx_comment.match(line):
             continue
-        line = rx_inline_comment.sub("", line)
+        line = str.strip(rx_inline_comment.sub("", line))
+        if is_glob(line) and not rx_timed.match(line):
+            globs.add(line)
+            names.add(line)
+            continue
         for rx in rx_set:
             matches = rx.match(line)
             if not matches:
@@ -41,20 +56,18 @@ def parse_time_restricted_list(content):
             time_restriction = matches.group(2)
             if time_restriction:
                 time_restrictions[name] = time_restriction
-    return names, time_restrictions
-
-
-def parse_trusted_list(content):
-    names, _time_restrictions = parse_time_restricted_list(content)
-    time_restrictions = {}
-    return names, time_restrictions
+    return names, time_restrictions, globs
 
 
 def parse_list(content, trusted=False):
+    if trusted:
+        return parse_trusted_list(content)
+
     rx_comment = re.compile(r"^(#|$)")
     rx_inline_comment = re.compile(r"\s*#\s*[a-z0-9-].*$")
     rx_u = re.compile(
-        r"^@*\|\|([a-z0-9][a-z0-9.-]*[.][a-z]{2,})\^?(\$(popup|third-party))?$")
+        r"^@*\|\|([a-z0-9][a-z0-9.-]*[.][a-z]{2,})\^?(\$(popup|third-party))?$"
+    )
     rx_l = re.compile(r"^([a-z0-9][a-z0-9.-]*[.][a-z]{2,})$")
     rx_lw = re.compile(r"^[*][.]([a-z0-9][a-z0-9.-]*[.][a-z]{2,})$")
     rx_h = re.compile(
@@ -64,64 +77,37 @@ def parse_list(content, trusted=False):
     rx_b = re.compile(r"^([a-z0-9][a-z0-9.-]*[.][a-z]{2,}),.+,[0-9: /-]+,")
     rx_dq = re.compile(r"^address=/([a-z0-9][a-z0-9.-]*[.][a-z]{2,})/.")
 
-    if trusted:
-        return parse_trusted_list(content)
-
     names = set()
     time_restrictions = {}
+    globs = set()
     rx_set = [rx_u, rx_l, rx_lw, rx_h, rx_mdl, rx_b, rx_dq]
     for line in content.splitlines():
         line = str.lower(str.strip(line))
         if rx_comment.match(line):
             continue
-        line = rx_inline_comment.sub("", line)
+        line = str.strip(rx_inline_comment.sub("", line))
         for rx in rx_set:
             matches = rx.match(line)
             if not matches:
                 continue
             name = matches.group(1)
             names.add(name)
-    return names, time_restrictions
+    return names, time_restrictions, globs
 
 
-# basic check if the line contains any regex specific char
-def is_regex(line):
-    regex_chars = "*[]?}{"
-    return any(char in line for char in regex_chars)
-
-
-def parse_regex(names):
-    regexes = set()
-    for line in names:
-        # skip lines without regex characters:
-        if not is_regex(line):
-            continue
-        # convert to python regex:
-        line=line.replace(".", "\.")
-        line=line.replace("*", ".*")
-        line = "^"+line+"$"
-        # check if resulting regex is valid:
-        try:
-            if re.compile(line):
-                regexes.add(line)
-        except re.error:
-            sys.stderr.write("Invalid regex: {} [{}]\n".format(line, re.error))
-            continue
-    return regexes
-
-
-def print_restricted_name(name, time_restrictions):
+def print_restricted_name(output_fd, name, time_restrictions):
     if name in time_restrictions:
-        print("{}\t{}".format(name, time_restrictions[name]))
+        print("{}\t{}".format(name, time_restrictions[name]), file=output_fd, end="\n")
     else:
         print(
             "# ignored: [{}] was in the time-restricted list, "
-            "but without a time restriction label".format(name)
+            "but without a time restriction label".format(name),
+            file=output_fd,
+            end="\n",
         )
 
 
-def load_from_url(url):
-    sys.stderr.write("Loading data from [{}]\n".format(url))
+def load_from_url(url, timeout):
     req = urllib.Request(url=url, headers={"User-Agent": "dnscrypt-proxy"})
     trusted = False
 
@@ -134,17 +120,16 @@ def load_from_url(url):
 
     response = None
     try:
-        response = urllib.urlopen(req, timeout=int(args.timeout))
-    except urllib.URLError as err:
-        raise Exception("[{}] could not be loaded: {}\n".format(url, err))
+        response = urllib.urlopen(req, timeout=int(timeout))
+        content = response.read() # "The read operation timed out"
+    except Exception as err:
+        raise Exception("[{}] could not be loaded: {}".format(url, err))
     if trusted is False and response.getcode() != 200:
-        raise Exception("[{}] returned HTTP code {}\n".format(
-            url, response.getcode()))
-    content = response.read()
+        raise Exception("[{}] returned HTTP code {}".format(url, response.getcode()))
     if URLLIB_NEW:
         content = content.decode("utf-8", errors="replace")
 
-    return (content, trusted)
+    return content, trusted
 
 
 def name_cmp(name):
@@ -153,96 +138,196 @@ def name_cmp(name):
     return str.join(".", parts)
 
 
+def is_glob(pattern):
+    maybe_glob = False
+    for i in range(len(pattern)):
+        c = pattern[i]
+        if c == "?" or c == "[":
+            maybe_glob = True
+        elif c == "*" and i != 0:
+            if i < len(pattern) - 1 or pattern[i - 1] == ".":
+                maybe_glob = True
+    if maybe_glob:
+        try:
+            fnmatch.fnmatch("example", pattern)
+            return True
+        except:
+            pass
+    return False
+
+
+def covered_by_glob(globs, name):
+    if name in globs:
+        return False
+    for glob in globs:
+        try:
+            if fnmatch.fnmatch(name, glob):
+                return True
+        except:
+            pass
+    return False
+
+
 def has_suffix(names, name):
     parts = str.split(name, ".")
     while parts:
         parts = parts[1:]
         if str.join(".", parts) in names:
             return True
-
     return False
 
 
-# check if a line matches with any of the collected regexes:
-def covered_by_regex(line, regexes):
-
-    # only check lines that aren't regexes themselves:
-    if not is_regex(line):
-        for regex in regexes:
-            if re.match(regex, line):
-                return True
-
-    return False
-
-
-def allowlist_from_url(url):
+def allowlist_from_url(url, timeout):
     if not url:
         return set()
-    content, trusted = load_from_url(url)
+    content, trusted = load_from_url(url, timeout)
 
-    names, _time_restrictions = parse_list(content, trusted)
+    names, _time_restrictions, _globs = parse_list(content, trusted)
     return names
+
+STOP_RETRY = False
+
+def load_url_with_retry(url, timeout, tries=3, retry_delay=2):
+    log_info, log_err = setup_logging()
+    for attempt in range(tries):
+        try_msg = f"try: {attempt + 1}/{tries}"
+        try:
+            log_info.write(f"[{try_msg}] Loading data from [{url}]\n")
+            content, trusted = load_from_url(url, timeout)
+            log_err.write(f"[{try_msg}] [{url}] OK\n")
+            return content, trusted
+        except Exception as e:
+            log_err.write(f"[{try_msg}] {e}\n")
+            if STOP_RETRY:
+                break
+            if attempt < tries - 1:
+                time.sleep(retry_delay)
+            else:
+                raise e
+
+
+def load_blocklists_parallel(urls, timeout, ignore_retrieval_failure):
+    log_info, log_err = setup_logging()
+    blocklists = {}
+    all_names = set()
+    all_globs = set()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        future_to_url = {
+            executor.submit(load_url_with_retry, url, timeout): url
+            for url in urls
+        }
+
+        # Useful for bad network situations
+        return_when = concurrent.futures.FIRST_EXCEPTION
+        if ignore_retrieval_failure:
+            return_when = concurrent.futures.ALL_COMPLETED
+        finished, unfinished = concurrent.futures.wait(future_to_url, None, return_when)
+        # Return early
+        if len(unfinished) > 0:
+            # Cancel unstarted tasks
+            for f in unfinished:
+                if not f.done():
+                    f.cancel()
+            # Stop retries
+            global STOP_RETRY
+            STOP_RETRY = True
+            # Threads won't be terminated forcibly
+            if not ignore_retrieval_failure:
+                sys.exit(1)
+
+        for future in finished:
+            url = future_to_url[future]
+            try:
+                content, trusted = future.result()
+                names, _time_restrictions, globs = parse_list(content, trusted)
+                blocklists[url] = names
+                all_names |= names
+                all_globs |= globs
+            except Exception as e:
+                log_err.write(f"{e}\n")
+                if not ignore_retrieval_failure:
+                    sys.exit(1)
+
+    return blocklists, all_names, all_globs
 
 
 def blocklists_from_config_file(
-    file, allowlist, time_restricted_url, ignore_retrieval_failure
+    file, allowlist, time_restricted_url, ignore_retrieval_failure, output_file, timeout
 ):
-    blocklists = {}
-    allowed_names = set()
-    all_regexes = set()
-    all_names = set()
-    unique_names = set()
+    log_info, log_err = setup_logging(output_file)
 
-    # Load conf & blocklists
+    # Get URLs from config file
+    urls = []
     with open(file) as fd:
         for line in fd:
             line = str.strip(line)
             if str.startswith(line, "#") or line == "":
                 continue
-            url = line
-            try:
-                content, trusted = load_from_url(url)
-                names, _time_restrictions = parse_list(content, trusted)
-                blocklists[url] = names
-                all_names |= names
-                all_regexes |= parse_regex(names)
+            urls.append(line)
 
-            except Exception as e:
-                sys.stderr.write(str(e))
-                if not ignore_retrieval_failure:
-                    exit(1)
+    # Load blocklists in parallel
+    blocklists, all_names, all_globs = load_blocklists_parallel(
+        urls, timeout, ignore_retrieval_failure
+    )
+
+    # Load allowed names
+    allowed_names = set()
 
     # Time-based blocklist
     if time_restricted_url and not re.match(r"^[a-z0-9]+:", time_restricted_url):
         time_restricted_url = "file:" + time_restricted_url
 
+    output_fd = sys.stdout
+    if output_file:
+        output_fd = open(output_file, "w")
+
     if time_restricted_url:
-        time_restricted_content, _trusted = load_from_url(time_restricted_url)
-        time_restricted_names, time_restrictions = parse_time_restricted_list(
-            time_restricted_content
-        )
+        try:
+            time_restricted_content, _trusted = load_from_url(
+                time_restricted_url, timeout
+            )
+            time_restricted_names, time_restrictions, _globs = parse_trusted_list(
+                time_restricted_content
+            )
 
-        if time_restricted_names:
-            print("\n# Time-based blocklist")
-            for name in time_restricted_names:
-                print_restricted_name(name, time_restrictions)
+            if time_restricted_names:
+                print(
+                    "########## Time-based blocklist ##########\n",
+                    file=output_fd,
+                    end="\n",
+                )
+                for name in time_restricted_names:
+                    print_restricted_name(output_fd, name, time_restrictions)
 
-        # Time restricted names should be allowed, or they could be always blocked
-        allowed_names |= time_restricted_names
+            # Time restricted names should be allowed, or they could be always blocked
+            allowed_names |= time_restricted_names
+        except Exception as e:
+            log_err.write(f"Error loading time-restricted list: {str(e)}\n")
 
     # Allowed list
     if allowlist and not re.match(r"^[a-z0-9]+:", allowlist):
         allowlist = "file:" + allowlist
 
-    allowed_names |= allowlist_from_url(allowlist)
+    try:
+        allowed_names |= allowlist_from_url(allowlist, timeout)
+    except Exception as e:
+        log_err.write(f"Error loading allowlist: {str(e)}\n")
 
     # Process blocklists
+    unique_names = set()
     for url, names in blocklists.items():
-        print("\n# Blocklist from [{}]".format(url))
-        ignored, allowed = 0, 0
-        list_names = list()
+        print(
+            "\n\n########## Blocklist from {} ##########\n".format(url),
+            file=output_fd,
+            end="\n",
+        )
+        ignored, glob_ignored, allowed = 0, 0, 0
+        list_names = []
         for name in names:
-            if has_suffix(all_names, name) or name in unique_names or covered_by_regex(name, all_regexes):
+            if covered_by_glob(all_globs, name):
+                glob_ignored = glob_ignored + 1
+            elif has_suffix(all_names, name) or name in unique_names:
                 ignored = ignored + 1
             elif has_suffix(allowed_names, name) or name in allowed_names:
                 allowed = allowed + 1
@@ -252,58 +337,103 @@ def blocklists_from_config_file(
 
         list_names.sort(key=name_cmp)
         if ignored:
-            print("# Ignored duplicates: {}".format(ignored))
+            print("# Ignored duplicates: {}".format(ignored), file=output_fd, end="\n")
+        if glob_ignored:
+            print(
+                "# Ignored due to overlapping local patterns: {}".format(glob_ignored),
+                file=output_fd,
+                end="\n",
+            )
         if allowed:
-            print("# Ignored entries due to the allowlist: {}".format(allowed))
+            print(
+                "# Ignored entries due to the allowlist: {}".format(allowed),
+                file=output_fd,
+                end="\n",
+            )
+        if ignored or glob_ignored or allowed:
+            print(file=output_fd, end="\n")
         for name in list_names:
-            print(name)
+            print(name, file=output_fd, end="\n")
+
+    output_fd.close()
 
 
-argp = argparse.ArgumentParser(
-    description="Create a unified blocklist from a set of local and remote files"
-)
-argp.add_argument(
-    "-c",
-    "--config",
-    default="domains-blocklist.conf",
-    help="file containing blocklist sources",
-)
-argp.add_argument(
-    "-w",
-    "--whitelist",
-    help="Deprecated.  Please use -a or --allowlist",
-)
-argp.add_argument(
-    "-a",
-    "--allowlist",
-    default="domains-allowlist.txt",
-    help="file containing a set of names to exclude from the blocklist",
-)
-argp.add_argument(
-    "-r",
-    "--time-restricted",
-    default="domains-time-restricted.txt",
-    help="file containing a set of names to be time restricted",
-)
-argp.add_argument(
-    "-i",
-    "--ignore-retrieval-failure",
-    action="store_true",
-    help="generate list even if some urls couldn't be retrieved",
-)
-argp.add_argument("-t", "--timeout", default=30, help="URL open timeout")
+def main():
+    argp = argparse.ArgumentParser(
+        description="Create a unified blocklist from a set of local and remote files"
+    )
+    argp.add_argument(
+        "-c",
+        "--config",
+        default="domains-blocklist.conf",
+        help="file containing blocklist sources",
+    )
+    argp.add_argument(
+        "-w",
+        "--whitelist",
+        help=argparse.SUPPRESS,
+    )
+    argp.add_argument(
+        "-a",
+        "--allowlist",
+        default="domains-allowlist.txt",
+        help="file containing a set of names to exclude from the blocklist",
+    )
+    argp.add_argument(
+        "-r",
+        "--time-restricted",
+        default="domains-time-restricted.txt",
+        help="file containing a set of names to be time restricted",
+    )
+    argp.add_argument(
+        "-i",
+        "--ignore-retrieval-failure",
+        action="store_true",
+        help="generate list even if some urls couldn't be retrieved",
+    )
+    argp.add_argument(
+        "-o",
+        "--output-file",
+        default=None,
+        help="save generated blocklist to a text file with the provided file name",
+    )
+    argp.add_argument("-t", "--timeout", default=30, help="URL open timeout in seconds")
+    argp.add_argument(
+        "-p",
+        "--progress",
+        action="store_true",
+        help="show download progress information",
+    )
 
-args = argp.parse_args()
+    args = argp.parse_args()
 
-whitelist = args.whitelist
-if whitelist:
-    print('Use of -w WHITELIST has been removed. Please use -a ALLOWLIST instead.')
-    exit(1)
+    whitelist = args.whitelist
+    if whitelist:
+        print(
+            "The option to provide a set of names to exclude from the blocklist has been changed from -w to -a\n"
+        )
+        argp.print_help()
+        exit(1)
 
-conf = args.config
-allowlist = args.allowlist
-time_restricted = args.time_restricted
-ignore_retrieval_failure = args.ignore_retrieval_failure
+    start_time = time.time()
 
-blocklists_from_config_file(
-    conf, allowlist, time_restricted, ignore_retrieval_failure)
+    log_info, _ = setup_logging(args.output_file)
+    if args.progress:
+        log_info.write("Starting blocklist generation...\n")
+
+    blocklists_from_config_file(
+        args.config,
+        args.allowlist,
+        args.time_restricted,
+        args.ignore_retrieval_failure,
+        args.output_file,
+        args.timeout,
+    )
+
+    if args.progress:
+        duration = time.time() - start_time
+        log_info.write(f"Blocklist generation completed in {duration:.2f} seconds\n")
+
+
+if __name__ == "__main__":
+    main()
