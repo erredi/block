@@ -374,3 +374,11 @@ feedback.ebay.*   # eBay customers reviews
 =feedback-api.trust.advgo.net   # subito.it
 =ingest.sentry.io               # subito.it
 =cdn.optimizely.com             # subito.it
+*.mi.com                        # xiaomi app
+*.xiaomi.com                    # xiaomi app
+*.xiaomi.net                    # xiaomi app
+=www.tripadvisor.com            # tripadvisor.com
+=static.tacdn.com               # tripadvisor.com
+=dynamic-media-cdn.tripadvisor.com      # tripadvisor.com
+*amazon.it                      # amazon.it
+*amazon.com                     # amazon.com
