@@ -312,6 +312,7 @@
 # [*.click*]
 =fibra.click         # Italian forum about FTTH deployments
 =forum.fibra.click   # Italian forum about FTTH deployments
+=i.fibra.click       # Italian forum about FTTH deployments
 
 # [*connectivitycheck*]
 =connectivitycheck.android.com          # required for Aurora Store v4
@@ -353,6 +354,7 @@ feedback.ebay.*   # eBay customers reviews
 =*.taboola.com                  # www.la7.it
 =*.permutive.app                # www.la7.it
 =imasdk.googleapis.com          # www.la7.it
+*cloudfront.net                 # www.la7.it
 =*.tiqcdn.com                   # mediaset.it
 =*.gigya.com                    # mediaset.it
 =images-revi.rcsobjects.it      # mediaset.it
