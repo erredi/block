@@ -360,9 +360,13 @@ feedback.ebay.*   # eBay customers reviews
 =images-revi.rcsobjects.it      # mediaset.it
 =*.mmstat.com                   # aliexpress.com
 =feedback.aliexpress.com        # aliexpress.com
+=fourier.aliexpress.com         # aliexpress.com
 =*.speedcurve.com               # www.tv8.it
 =cmp.sky.it                     # www.tv8.it
 =tripadvisor.it                 # tripadvisor.it
+=www.tripadvisor.com            # tripadvisor.com
+=static.tacdn.com               # tripadvisor.com
+=dynamic-media-cdn.tripadvisor.com      # tripadvisor.com
 =*.maltego.com                  # maltego.com
 =www.protondb.com               # protondb.com
 =clear.wallapop.com             # wallapop.com
@@ -379,8 +383,5 @@ feedback.ebay.*   # eBay customers reviews
 *.mi.com                        # xiaomi app
 *.xiaomi.com                    # xiaomi app
 *.xiaomi.net                    # xiaomi app
-=www.tripadvisor.com            # tripadvisor.com
-=static.tacdn.com               # tripadvisor.com
-=dynamic-media-cdn.tripadvisor.com      # tripadvisor.com
-*amazon.it                      # amazon.it
-*amazon.com                     # amazon.com
+=repo.huaweicloud.com		        # huawei cloud
+
