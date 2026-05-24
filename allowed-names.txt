@@ -354,7 +354,7 @@ feedback.ebay.*   # eBay customers reviews
 =*.taboola.com                  # www.la7.it
 =*.permutive.app                # www.la7.it
 =imasdk.googleapis.com          # www.la7.it
-*cloudfront.net                 # www.la7.it
+=*cloudfront.net                 # www.la7.it
 =*.tiqcdn.com                   # mediaset.it
 =*.gigya.com                    # mediaset.it
 =images-revi.rcsobjects.it      # mediaset.it
@@ -380,8 +380,13 @@ feedback.ebay.*   # eBay customers reviews
 =feedback-api.trust.advgo.net   # subito.it
 =ingest.sentry.io               # subito.it
 =cdn.optimizely.com             # subito.it
-*.mi.com                        # xiaomi app
-*.xiaomi.com                    # xiaomi app
-*.xiaomi.net                    # xiaomi app
-=repo.huaweicloud.com		        # huawei cloud
+=*.mi.com                        # xiaomi app
+=*.xiaomi.com                    # xiaomi app
+=*.xiaomi.net                    # xiaomi app
+=repo.huaweicloud.com		# huawei cloud
+=forms-prod3.sprinklr.com       # decathlon.it
+=tracking.asendia.com           # tracking shipment
+=*.subito.it                    # subito.it
+=*.marktplaats.nl               # marktplaats
+=*.marktplaats.net              # marktplaats
 
